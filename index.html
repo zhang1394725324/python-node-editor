@@ -1,1 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Python 节点编程编辑器</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- React Flow 样式 -->
+    <link rel="stylesheet" href="https://unpkg.com/reactflow@11.10.4/dist/style.css" />
+    <!-- CodeMirror 代码编辑器 -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/monokai.min.css">
+</head>
+<body>
+    <div class="app">
+        <!-- 侧边栏：函数库 -->
+        <div class="sidebar">
+            <h3>📦 函数库</h3>
+            <div id="function-tree">
+                <div class="loading">加载中...</div>
+            </div>
+        </div>
 
+        <!-- 中央：节点画布 -->
+        <div class="canvas-container">
+            <div class="toolbar">
+                <button id="clear-canvas">清空画布</button>
+                <button id="run-all">▶ 运行所有节点</button>
+                <span id="exec-status">就绪</span>
+            </div>
+            <div id="react-flow" style="width: 100%; height: calc(100vh - 60px);"></div>
+        </div>
+
+        <!-- 右侧：输出面板 -->
+        <div class="output-panel">
+            <h3>📋 输出结果</h3>
+            <div id="output-log"></div>
+        </div>
+    </div>
+
+    <!-- 依赖库 -->
+    <script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.development.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/reactflow@11.10.4/dist/umd/index.js"></script>
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>
