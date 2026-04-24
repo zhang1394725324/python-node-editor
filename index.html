@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Python 节点编程编辑器 - 专业版</title>
+    <title>Python 节点编程编辑器</title>
     <link rel="stylesheet" href="style.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/monokai.min.css">
@@ -46,34 +46,6 @@
                     <button id="clear-logs">清空</button>
                 </div>
                 <div id="output-log" class="output-log"></div>
-            </div>
-        </div>
-    </div>
-
-    <!-- 嵌套节点编辑模态框 -->
-    <div id="nested-modal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3>📦 嵌套节点编辑器</h3>
-                <span class="modal-close">&times;</span>
-            </div>
-            <div class="modal-body">
-                <div class="nested-editor">
-                    <div id="nested-canvas" class="nested-canvas"></div>
-                </div>
-                <div class="nested-info">
-                    <div class="nested-inputs">
-                        <strong>输入端口:</strong>
-                        <div id="nested-input-list"></div>
-                        <button id="add-nested-input">+ 添加输入</button>
-                    </div>
-                    <div class="nested-outputs">
-                        <strong>输出端口:</strong>
-                        <div id="nested-output-list"></div>
-                        <button id="add-nested-output">+ 添加输出</button>
-                    </div>
-                    <button id="save-nested" class="save-btn">💾 保存嵌套节点</button>
-                </div>
             </div>
         </div>
     </div>
