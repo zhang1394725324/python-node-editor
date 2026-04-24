@@ -1,15 +1,13 @@
 // ========== 全局变量 ==========
 let pyodide = null;
 let nodes = [];
-let connections = [];  // { fromNodeId, fromPort, toNodeId, toPort }
+let connections = [];
 let functionLibrary = {};
-let currentDraggingConnection = null;
-let execOrder = [];
-let nestedEditingNode = null;  // 当前正在编辑的嵌套节点
 let codeMirror = null;
-
-// 执行顺序显示状态
 let showExecOrder = false;
+let isDraggingNode = false;
+let currentDragNode = null;
+let dragOffsetX = 0, dragOffsetY = 0;
 
 // ========== 初始化 ==========
 window.addEventListener('DOMContentLoaded', async () => {
@@ -39,19 +37,14 @@ window.addEventListener('DOMContentLoaded', async () => {
     // 初始化画布
     initCanvas();
     
-    // 示例节点
+    // 添加示例节点
     addExampleNodes();
     
-    // 监听变化，实时更新代码
-    watchForChanges();
+    // 更新代码
+    updateGeneratedCode();
 });
 
 // ========== 监听变化，实时更新代码 ==========
-function watchForChanges() {
-    // 使用 MutationObserver 或定期检查（简化：每次操作后手动调用）
-    // 主要操作都会调用 updateGeneratedCode
-}
-
 function updateGeneratedCode() {
     const code = generatePythonCode();
     if (codeMirror) {
@@ -66,25 +59,21 @@ function generatePythonCode() {
     lines.push('# -*- coding: utf-8 -*-');
     lines.push('# 由 Python 节点编辑器自动生成');
     lines.push('');
-    
-    // 收集所有需要导入的模块
     lines.push('import math');
-    lines.push('import json');
     lines.push('');
+    
+    // 收集已输出的函数名，避免重复
+    const addedFunctions = new Set();
     
     // 为每个节点生成函数定义
     for (const node of nodes) {
-        if (node.data.isNested) {
-            // 嵌套节点：展开内部逻辑
-            lines.push(generateNestedNodeCode(node));
-        } else {
-            // 普通节点：直接使用其代码
+        if (node.data.code && !addedFunctions.has(node.data.funcName)) {
+            addedFunctions.add(node.data.funcName);
             lines.push(node.data.code);
             lines.push('');
         }
     }
     
-    lines.push('');
     lines.push('# ========== 主执行流程 ==========');
     lines.push('');
     
@@ -98,11 +87,11 @@ function generatePythonCode() {
         const node = nodes.find(n => n.id === nodeId);
         if (!node) continue;
         
-        const outputVar = `_node_${node.id.replace(/[^a-zA-Z0-9]/g, '_')}`;
+        const outputVar = `_out_${node.id.replace(/[^a-zA-Z0-9]/g, '_')}`;
         nodeOutputVars[nodeId] = outputVar;
         
         // 构建函数调用
-        const funcName = node.data.funcName || node.data.label;
+        const funcName = node.data.funcName;
         const inputs = node.data.inputs || [];
         
         const argValues = [];
@@ -112,9 +101,8 @@ function generatePythonCode() {
             
             if (incomingConn) {
                 // 来自其他节点的输出
-                const fromNode = nodes.find(n => n.id === incomingConn.fromNodeId);
-                if (fromNode) {
-                    const fromVar = nodeOutputVars[incomingConn.fromNodeId];
+                const fromVar = nodeOutputVars[incomingConn.fromNodeId];
+                if (fromVar) {
                     argValues.push(fromVar);
                 } else {
                     argValues.push('None');
@@ -125,99 +113,27 @@ function generatePythonCode() {
                 if (val === undefined || val === '') {
                     argValues.push('None');
                 } else if (typeof val === 'string') {
-                    argValues.push(`"${val.replace(/"/g, '\\"')}"`);
+                    // 尝试解析数字
+                    const num = parseFloat(val);
+                    if (!isNaN(num) && val.trim() !== '') {
+                        argValues.push(num);
+                    } else {
+                        argValues.push(`"${val.replace(/"/g, '\\"')}"`);
+                    }
                 } else {
-                    argValues.push(JSON.stringify(val));
+                    argValues.push(val);
                 }
             }
         }
         
         lines.push(`# 执行节点: ${node.data.label}`);
         lines.push(`${outputVar} = ${funcName}(${argValues.join(', ')})`);
-        lines.push(`print(f"${node.data.label}: {${outputVar}}")`);
+        lines.push(`print(f"  ${node.data.label}: {${outputVar}}")`);
         lines.push('');
     }
     
-    // 添加最终输出
-    lines.push('# ========== 最终结果 ==========');
-    if (order.length > 0) {
-        const lastNode = nodes.find(n => n.id === order[order.length - 1]);
-        if (lastNode) {
-            const lastVar = nodeOutputVars[order[order.length - 1]];
-            lines.push(`print(f"\\n最终结果: {${lastVar}}")`);
-        }
-    }
-    
-    return lines.join('\n');
-}
-
-// 生成嵌套节点的代码
-function generateNestedNodeCode(node) {
-    const lines = [];
-    const subNodes = node.data.subNodes || [];
-    const subConnections = node.data.subConnections || [];
-    const nestedInputs = node.data.nestedInputs || [];
-    const nestedOutputs = node.data.nestedOutputs || [];
-    
-    lines.push(`def ${node.data.funcName || node.data.label}(`);
-    lines.push(`    ${nestedInputs.map(inp => inp.name).join(', ')}`);
-    lines.push(`):`);
-    lines.push(`    """${node.data.description || '嵌套节点'}"""`);
-    lines.push('');
-    
-    // 存储子节点输出
-    const subOutputVars = {};
-    
-    for (const subNode of subNodes) {
-        const subOutputVar = `_sub_${subNode.id.replace(/[^a-zA-Z0-9]/g, '_')}`;
-        subOutputVars[subNode.id] = subOutputVar;
-        
-        const subInputs = subNode.data.inputs || [];
-        const argValues = [];
-        
-        for (const subInput of subInputs) {
-            const incomingConn = subConnections.find(c => c.toNodeId === subNode.id && c.toPort === subInput);
-            
-            if (incomingConn) {
-                if (incomingConn.fromNodeId === 'nested_input') {
-                    // 来自嵌套节点的输入端口
-                    const inputIndex = nestedInputs.findIndex(inp => inp.name === incomingConn.fromPort);
-                    if (inputIndex >= 0) {
-                        argValues.push(nestedInputs[inputIndex].name);
-                    } else {
-                        argValues.push('None');
-                    }
-                } else {
-                    const fromVar = subOutputVars[incomingConn.fromNodeId];
-                    argValues.push(fromVar || 'None');
-                }
-            } else {
-                argValues.push('None');
-            }
-        }
-        
-        lines.push(`    # 子节点: ${subNode.data.label}`);
-        lines.push(`    ${subOutputVar} = ${subNode.data.funcName || subNode.data.label}(${argValues.join(', ')})`);
-    }
-    
-    // 收集输出
-    for (const output of nestedOutputs) {
-        const conn = subConnections.find(c => c.fromNodeId === 'nested_output' && c.fromPort === output.name);
-        if (conn) {
-            const outputVar = subOutputVars[conn.toNodeId];
-            if (outputVar) {
-                lines.push(`    ${output.name} = ${outputVar}`);
-            }
-        }
-    }
-    
-    // 返回值
-    if (nestedOutputs.length === 1) {
-        lines.push(`    return ${nestedOutputs[0].name}`);
-    } else if (nestedOutputs.length > 1) {
-        lines.push(`    return (${nestedOutputs.map(o => o.name).join(', ')})`);
-    } else {
-        lines.push(`    return None`);
+    if (order.length === 0) {
+        lines.push('print("没有节点需要执行")');
     }
     
     return lines.join('\n');
@@ -267,30 +183,28 @@ function getTopologicalOrder() {
     
     // 如果有循环依赖，返回原始顺序
     if (order.length !== nodes.length) {
-        console.warn('检测到循环依赖');
         return nodes.map(n => n.id);
     }
     
     return order;
 }
 
-// ========== 执行节点（按拓扑顺序）==========
+// ========== 执行所有节点 ==========
 async function executeAllNodes() {
     const order = getTopologicalOrder();
     const nodeOutputs = {};
     
-    addLog(`🚀 开始执行 ${order.length} 个节点 (拓扑顺序)`);
+    addLog(`🚀 开始执行 ${order.length} 个节点`);
     
     for (const nodeId of order) {
         const node = nodes.find(n => n.id === nodeId);
         if (!node) continue;
         
-        // 高亮当前执行的节点
         highlightNode(nodeId, true);
         
         try {
             await executeNode(node, nodeOutputs);
-            addLog(`✅ ${node.data.label} 执行完成`);
+            addLog(`✅ ${node.data.label} 完成`);
         } catch (err) {
             addLog(`❌ ${node.data.label} 失败: ${err.message}`);
         }
@@ -299,7 +213,8 @@ async function executeAllNodes() {
         await new Promise(r => setTimeout(r, 100));
     }
     
-    addLog(`✨ 全部执行完成`);
+    renderNodes();
+    addLog(`✨ 执行完成`);
 }
 
 async function executeNode(node, contextOutputs = {}) {
@@ -307,84 +222,67 @@ async function executeNode(node, contextOutputs = {}) {
     renderNodes();
     
     try {
-        const funcName = node.data.funcName || node.data.label;
+        const funcName = node.data.funcName;
         const inputs = node.data.inputs || [];
         
         const argValues = [];
         for (const input of inputs) {
             const incomingConn = connections.find(c => c.toNodeId === node.id && c.toPort === input);
             
-            if (incomingConn) {
-                // 从 contextOutputs 获取值
-                const fromNode = nodes.find(n => n.id === incomingConn.fromNodeId);
-                if (fromNode && contextOutputs[incomingConn.fromNodeId] !== undefined) {
-                    argValues.push(contextOutputs[incomingConn.fromNodeId]);
-                } else {
-                    argValues.push('None');
-                }
+            if (incomingConn && contextOutputs[incomingConn.fromNodeId] !== undefined) {
+                argValues.push(contextOutputs[incomingConn.fromNodeId]);
+            } else if (incomingConn) {
+                argValues.push('None');
             } else {
                 let val = node.data.inputValues?.[input];
                 if (val === undefined || val === '') {
                     argValues.push('None');
-                } else if (typeof val === 'string' && !isNaN(val)) {
-                    argValues.push(Number(val));
-                } else if (typeof val === 'string') {
-                    argValues.push(`"${val.replace(/"/g, '\\"')}"`);
                 } else {
                     argValues.push(val);
                 }
             }
         }
         
-        // 处理嵌套节点
-        let result;
-        if (node.data.isNested) {
-            const nestedCode = generateNestedNodeCode(node);
-            await pyodide.runPythonAsync(nestedCode);
-            const argsStr = argValues.map(v => {
-                if (typeof v === 'string' && v.startsWith('"')) return v;
-                return JSON.stringify(v);
-            }).join(', ');
-            const execCode = `result = ${funcName}(${argsStr})`;
-            await pyodide.runPythonAsync(execCode);
-            result = await pyodide.runPythonAsync('result');
-        } else {
-            // 确保函数已注册
-            await pyodide.runPythonAsync(node.data.code);
-            const argsStr = argValues.map(v => {
-                if (typeof v === 'string' && v.startsWith('"')) return v;
-                if (typeof v === 'string') return `"${v}"`;
-                return String(v);
-            }).join(', ');
-            const execCode = `
+        // 确保函数已注册
+        await pyodide.runPythonAsync(node.data.code);
+        
+        const argsStr = argValues.map(v => {
+            if (typeof v === 'string') return `"${v.replace(/"/g, '\\"')}"`;
+            return String(v);
+        }).join(', ');
+        
+        const execCode = `
 try:
     result = ${funcName}(${argsStr})
     result
 except Exception as e:
     f"ERROR: {str(e)}"
-            `;
-            const output = await pyodide.runPythonAsync(execCode);
-            if (typeof output === 'string' && output.startsWith('ERROR:')) {
-                throw new Error(output.replace('ERROR: ', ''));
-            }
-            result = output;
+        `;
+        
+        const output = await pyodide.runPythonAsync(execCode);
+        if (typeof output === 'string' && output.startsWith('ERROR:')) {
+            throw new Error(output.replace('ERROR: ', ''));
         }
         
-        contextOutputs[node.id] = result;
-        node.data.outputValue = result;
+        contextOutputs[node.id] = output;
+        node.data.outputValue = output;
         
     } catch (err) {
-        node.data.outputValue = null;
+        node.data.outputValue = `错误`;
         throw err;
     } finally {
         node.data.isExecuting = false;
     }
 }
 
-// ========== 画布操作 ==========
+// ========== 画布初始化 ==========
 function initCanvas() {
     const container = document.getElementById('react-flow');
     
+    // 清空容器
+    container.innerHTML = '';
+    
+    // 拖拽放置
     container.addEventListener('dragover', (e) => {
         e.preventDefault();
         e.dataTransfer.dropEffect = 'copy';
@@ -403,39 +301,38 @@ function initCanvas() {
             console.error('拖拽解析失败:', err);
         }
     });
-    
-    // 监听连线相关的事件
-    setupConnectionDrawing();
 }
 
-function setupConnectionDrawing() {
-    // 使用全局监听来模拟连线绘制
-    document.body.addEventListener('click', (e) => {
-        const portEl = e.target.closest('.input-port, .output-port');
-        if (!portEl) return;
-        
-        const portType = portEl.classList.contains('input-port') ? 'input' : 'output';
-        const nodeId = portEl.closest('.flow-node')?.dataset?.nodeId;
-        const portName = portEl.querySelector('.port-name')?.textContent || 
-                         portEl.textContent.trim().split(' ')[0];
-        
-        if (!nodeId) return;
-        
-        if (currentDraggingConnection === null && portType === 'output') {
-            // 开始拖拽连线
-            currentDraggingConnection = { fromNodeId: nodeId, fromPort: portName };
-            portEl.style.opacity = '0.6';
-        } else if (currentDraggingConnection && portType === 'input') {
-            // 完成连线
-            addConnection(currentDraggingConnection.fromNodeId, currentDraggingConnection.fromPort, nodeId, portName);
-            currentDraggingConnection = null;
-            document.querySelectorAll('.output-port').forEach(p => p.style.opacity = '');
-        } else if (currentDraggingConnection && portType === 'output') {
-            // 取消连线
-            currentDraggingConnection = null;
-            document.querySelectorAll('.output-port').forEach(p => p.style.opacity = '');
+function addNode(funcData, x, y) {
+    const nodeId = `node_${Date.now()}_${Math.random().toString(36).substr(2, 8)}`;
+    const node = {
+        id: nodeId,
+        position: { x: Math.max(20, x), y: Math.max(20, y) },
+        data: {
+            label: funcData.displayName,
+            funcName: funcData.funcName,
+            code: funcData.code,
+            inputs: funcData.inputs || [],
+            outputs: funcData.outputs || ['result'],
+            inputValues: {},
+            outputValue: null,
+            isExecuting: false,
+            description: funcData.description || ''
         }
-    });
+    };
+    
+    nodes.push(node);
+    renderNodes();
+    updateGeneratedCode();
+    addLog(`➕ 添加节点: ${node.data.label}`);
+}
+
+function deleteNode(nodeId) {
+    nodes = nodes.filter(n => n.id !== nodeId);
+    connections = connections.filter(c => c.fromNodeId !== nodeId && c.toNodeId !== nodeId);
+    renderNodes();
+    updateGeneratedCode();
+    addLog(`🗑️ 删除节点`);
 }
 
 function addConnection(fromNodeId, fromPort, toNodeId, toPort) {
@@ -446,18 +343,17 @@ function addConnection(fromNodeId, fromPort, toNodeId, toPort) {
     
     // 检查是否形成循环
     if (wouldCreateCycle(fromNodeId, toNodeId)) {
-        addLog('⚠️ 不能创建循环依赖的连接');
+        addLog('⚠️ 不能创建循环依赖');
         return;
     }
     
     connections.push({ fromNodeId, fromPort, toNodeId, toPort });
     renderNodes();
     updateGeneratedCode();
-    addLog(`🔗 创建连接: ${fromNodeId.slice(-4)}.${fromPort} → ${toNodeId.slice(-4)}.${toPort}`);
+    addLog(`🔗 连接: ${fromNodeId.slice(-6)}.${fromPort} → ${toNodeId.slice(-6)}.${toPort}`);
 }
 
 function wouldCreateCycle(fromNodeId, toNodeId) {
-    // 简化：检查 toNodeId 是否依赖 fromNodeId
     const visited = new Set();
     const stack = [toNodeId];
     
@@ -483,68 +379,6 @@ function removeConnection(fromNodeId, fromPort, toNodeId, toPort) {
     addLog(`🔗 删除连接`);
 }
 
-function addNode(funcData, x, y) {
-    const nodeId = `node_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
-    const node = {
-        id: nodeId,
-        position: { x, y },
-        data: {
-            label: funcData.displayName,
-            funcName: funcData.funcName,
-            code: funcData.code,
-            inputs: funcData.inputs || [],
-            outputs: funcData.outputs || ['result'],
-            inputValues: {},
-            outputValue: null,
-            isExecuting: false,
-            isNested: false,
-            description: funcData.description || ''
-        }
-    };
-    
-    nodes.push(node);
-    renderNodes();
-    updateGeneratedCode();
-    addLog(`➕ 添加节点: ${node.data.label}`);
-}
-
-function addNestedNode(name, inputs, outputs, subNodes, subConnections) {
-    const nodeId = `nested_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
-    const node = {
-        id: nodeId,
-        position: { x: 200, y: 200 },
-        data: {
-            label: name,
-            funcName: name.replace(/\s/g, '_').toLowerCase(),
-            inputs: inputs.map(i => i.name),
-            outputs: outputs.map(o => o.name),
-            inputValues: {},
-            outputValue: null,
-            isExecuting: false,
-            isNested: true,
-            subNodes: subNodes,
-            subConnections: subConnections,
-            nestedInputs: inputs,
-            nestedOutputs: outputs,
-            description: `嵌套节点: ${name}`,
-            code: ''  // 动态生成
-        }
-    };
-    
-    nodes.push(node);
-    renderNodes();
-    updateGeneratedCode();
-    addLog(`📦 添加嵌套节点: ${name}`);
-}
-
-function deleteNode(nodeId) {
-    nodes = nodes.filter(n => n.id !== nodeId);
-    connections = connections.filter(c => c.fromNodeId !== nodeId && c.toNodeId !== nodeId);
-    renderNodes();
-    updateGeneratedCode();
-    addLog(`🗑️ 删除节点`);
-}
-
 function highlightNode(nodeId, highlight) {
     const nodeEl = document.querySelector(`.flow-node[data-node-id="${nodeId}"]`);
     if (nodeEl) {
@@ -556,23 +390,39 @@ function highlightNode(nodeId, highlight) {
     }
 }
 
-// ========== 渲染节点 ==========
+// ========== 渲染节点和连线 ==========
 function renderNodes() {
     const container = document.getElementById('react-flow');
+    if (!container) return;
+    
+    // 保存滚动位置
+    const scrollLeft = container.scrollLeft;
+    const scrollTop = container.scrollTop;
+    
     container.innerHTML = '';
     
-    // 先渲染所有节点
+    // 确保容器有相对定位
+    container.style.position = 'relative';
+    container.style.minHeight = '100%';
+    
+    // 渲染所有节点
     for (const node of nodes) {
         const nodeDiv = createNodeElement(node);
         container.appendChild(nodeDiv);
     }
     
-    // 再渲染连线
+    // 渲染连线
     renderConnections(container);
     
-    // 更新执行顺序显示
+    // 恢复滚动位置
+    container.scrollLeft = scrollLeft;
+    container.scrollTop = scrollTop;
+    
+    // 显示执行顺序
     if (showExecOrder) {
-        displayExecOrder();
+        const order = getTopologicalOrder();
+        addLog(`📊 执行顺序: ${order.map(id => nodes.find(n=>n.id===id)?.data.label || '?').join(' → ')}`);
+        showExecOrder = false;
     }
 }
 
@@ -583,71 +433,65 @@ function createNodeElement(node) {
     div.style.position = 'absolute';
     div.style.left = `${node.position.x}px`;
     div.style.top = `${node.position.y}px`;
+    div.style.minWidth = '220px';
+    div.style.backgroundColor = '#2d2d3f';
+    div.style.borderRadius = '10px';
+    div.style.border = `2px solid ${node.data.isExecuting ? '#f9e45b' : '#89b4fa'}`;
+    div.style.boxShadow = '0 4px 12px rgba(0,0,0,0.3)';
+    div.style.cursor = 'move';
     
-    if (node.data.isExecuting) {
-        div.classList.add('executing');
-    }
-    
-    // Header
+    // 头部
     const header = document.createElement('div');
     header.className = 'node-header';
+    header.style.padding = '10px 12px';
+    header.style.backgroundColor = 'rgba(0,0,0,0.2)';
+    header.style.borderRadius = '8px 8px 0 0';
+    header.style.display = 'flex';
+    header.style.justifyContent = 'space-between';
+    header.style.alignItems = 'center';
+    header.style.cursor = 'move';
     header.innerHTML = `
-        <span class="node-title">🔷 ${node.data.label}</span>
-        <div class="node-actions">
-            ${node.data.isNested ? '<span class="nested-badge">📦 嵌套</span>' : ''}
-            <button class="edit-nested-btn" title="编辑嵌套节点" ${!node.data.isNested ? 'style="display:none"' : ''}>✏️</button>
-            <button class="delete-node-btn" title="删除节点">✕</button>
-        </div>
+        <span style="color:#89b4fa; font-weight:bold;">🔷 ${node.data.label}</span>
+        <button class="delete-node-btn" style="background:none; border:none; color:#f38ba8; cursor:pointer; font-size:16px;" title="删除">✕</button>
     `;
     div.appendChild(header);
     
-    // 嵌套节点编辑按钮
-    const editBtn = header.querySelector('.edit-nested-btn');
-    if (editBtn && node.data.isNested) {
-        editBtn.onclick = (e) => {
-            e.stopPropagation();
-            openNestedEditor(node);
-        };
-    }
-    
-    // 删除按钮
-    const deleteBtn = header.querySelector('.delete-node-btn');
-    deleteBtn.onclick = (e) => {
-        e.stopPropagation();
-        deleteNode(node.id);
-    };
-    
-    // Content
+    // 内容
     const content = document.createElement('div');
-    content.className = 'node-content';
+    content.style.padding = '10px 12px';
     
     // 输入端口
     if (node.data.inputs && node.data.inputs.length > 0) {
         const inputsDiv = document.createElement('div');
-        inputsDiv.className = 'node-section';
-        inputsDiv.innerHTML = '<div class="node-section-title">📥 输入</div>';
+        inputsDiv.style.marginBottom = '12px';
+        inputsDiv.innerHTML = '<div style="font-size:10px; color:#6c7086; margin-bottom:6px;">📥 输入</div>';
         
         for (const input of node.data.inputs) {
             const incomingConn = connections.find(c => c.toNodeId === node.id && c.toPort === input);
             const portDiv = document.createElement('div');
             portDiv.className = 'input-port';
-            portDiv.innerHTML = `
-                <div class="port-dot"></div>
-                <span class="port-name">${input}</span>
-                ${!incomingConn ? `<input class="input-value" type="text" placeholder="值" value="${node.data.inputValues?.[input] || ''}">` : '<span style="margin-left:auto; font-size:10px; color:#6c7086;">← 连接</span>'}
-            `;
-            inputsDiv.appendChild(portDiv);
+            portDiv.style.display = 'flex';
+            portDiv.style.alignItems = 'center';
+            portDiv.style.margin = '4px 0';
+            portDiv.style.padding = '4px 6px';
+            portDiv.style.backgroundColor = '#24273a';
+            portDiv.style.borderRadius = '4px';
+            portDiv.style.borderLeft = '2px solid #a6e3a1';
             
-            // 输入框变化事件
-            const inputField = portDiv.querySelector('.input-value');
-            if (inputField) {
-                inputField.onchange = (e) => {
-                    let val = e.target.value;
-                    if (!isNaN(val) && val !== '') val = Number(val);
-                    node.data.inputValues[input] = val;
-                    updateGeneratedCode();
-                };
+            if (incomingConn) {
+                portDiv.innerHTML = `
+                    <div style="width:8px; height:8px; background:#a6e3a1; border-radius:50%; margin-right:8px;"></div>
+                    <span style="font-size:11px; font-family:monospace;">${input}</span>
+                    <span style="margin-left:auto; font-size:10px; color:#6c7086;">← 已连接</span>
+                `;
+            } else {
+                portDiv.innerHTML = `
+                    <div style="width:8px; height:8px; background:#a6e3a1; border-radius:50%; margin-right:8px;"></div>
+                    <span style="font-size:11px; font-family:monospace;">${input}</span>
+                    <input class="input-value" type="text" placeholder="值" value="${node.data.inputValues?.[input] || ''}" style="margin-left:auto; width:80px; background:#1a1b26; border:none; color:#cdd6f4; padding:2px 6px; border-radius:4px; font-size:11px;">
+                `;
             }
+            inputsDiv.appendChild(portDiv);
         }
         content.appendChild(inputsDiv);
     }
@@ -655,35 +499,49 @@ function createNodeElement(node) {
     // 输出端口
     if (node.data.outputs && node.data.outputs.length > 0) {
         const outputsDiv = document.createElement('div');
-        outputsDiv.className = 'node-section';
-        outputsDiv.innerHTML = '<div class="node-section-title">📤 输出</div>';
+        outputsDiv.style.marginBottom = '12px';
+        outputsDiv.innerHTML = '<div style="font-size:10px; color:#6c7086; margin-bottom:6px;">📤 输出</div>';
         
         for (const output of node.data.outputs) {
             const portDiv = document.createElement('div');
             portDiv.className = 'output-port';
+            portDiv.style.display = 'flex';
+            portDiv.style.alignItems = 'center';
+            portDiv.style.margin = '4px 0';
+            portDiv.style.padding = '4px 6px';
+            portDiv.style.backgroundColor = '#24273a';
+            portDiv.style.borderRadius = '4px';
+            portDiv.style.borderLeft = '2px solid #f38ba8';
+            portDiv.style.cursor = 'pointer';
             portDiv.innerHTML = `
-                <div class="port-dot"></div>
-                <span class="port-name">${output}</span>
-                <span class="output-value">${node.data.outputValue !== null ? 
-                    (typeof node.data.outputValue === 'object' ? JSON.stringify(node.data.outputValue).slice(0, 30) : String(node.data.outputValue).slice(0, 30)) 
-                    : '未执行'}</span>
+                <div style="width:8px; height:8px; background:#f38ba8; border-radius:50%; margin-right:8px;"></div>
+                <span style="font-size:11px; font-family:monospace;">${output}</span>
+                <span class="output-value" style="margin-left:auto; font-size:10px; color:#a6e3a1;">${node.data.outputValue !== null ? String(node.data.outputValue).slice(0, 20) : '📤'}</span>
             `;
             outputsDiv.appendChild(portDiv);
         }
         content.appendChild(outputsDiv);
     }
     
-    div.appendChild(content);
-    
-    // Footer
+    // 底部按钮
     const footer = document.createElement('div');
-    footer.className = 'node-footer';
+    footer.style.padding = '8px 12px';
+    footer.style.borderTop = '1px solid #313244';
+    footer.style.display = 'flex';
+    footer.style.gap = '8px';
     footer.innerHTML = `
-        <button class="run-node-btn">▶ 执行</button>
+        <button class="run-node-btn" style="flex:1; background:#313244; border:none; color:#cdd6f4; padding:4px; border-radius:4px; cursor:pointer;">▶ 执行</button>
     `;
+    div.appendChild(content);
     div.appendChild(footer);
     
-    // 执行按钮
+    // 事件绑定
+    const deleteBtn = header.querySelector('.delete-node-btn');
+    deleteBtn.onclick = (e) => {
+        e.stopPropagation();
+        deleteNode(node.id);
+    };
+    
     const runBtn = footer.querySelector('.run-node-btn');
     runBtn.onclick = async (e) => {
         e.stopPropagation();
@@ -692,60 +550,110 @@ function createNodeElement(node) {
         updateGeneratedCode();
     };
     
-    // 拖动功能
+    // 输入框事件
+    const inputFields = div.querySelectorAll('.input-value');
+    inputFields.forEach((field, idx) => {
+        const inputName = node.data.inputs[idx];
+        field.onchange = (e) => {
+            let val = e.target.value;
+            if (!isNaN(val) && val !== '') val = Number(val);
+            node.data.inputValues[inputName] = val;
+            updateGeneratedCode();
+        };
+    });
+    
+    // 输出端口点击（开始连线）
+    const outputPorts = div.querySelectorAll('.output-port');
+    outputPorts.forEach((port, idx) => {
+        port.onclick = (e) => {
+            e.stopPropagation();
+            startConnection(node.id, node.data.outputs[idx]);
+        };
+    });
+    
+    // 拖动
     makeDraggable(div, node);
     
     return div;
 }
 
+// 连线功能
+let connectionStart = null;
+
+function startConnection(nodeId, portName) {
+    connectionStart = { fromNodeId: nodeId, fromPort: portName };
+    addLog(`🔌 开始连线: ${nodeId.slice(-6)}.${portName}`);
+    document.body.style.cursor = 'crosshair';
+}
+
+function finishConnection(toNodeId, toPort) {
+    if (connectionStart && connectionStart.fromNodeId !== toNodeId) {
+        addConnection(connectionStart.fromNodeId, connectionStart.fromPort, toNodeId, toPort);
+    }
+    connectionStart = null;
+    document.body.style.cursor = '';
+}
+
+function cancelConnection() {
+    connectionStart = null;
+    document.body.style.cursor = '';
+}
+
 function renderConnections(container) {
     // 获取所有节点的位置
-    const nodePositions = {};
+    const nodeRects = {};
     for (const node of nodes) {
         const nodeEl = container.querySelector(`.flow-node[data-node-id="${node.id}"]`);
         if (nodeEl) {
             const rect = nodeEl.getBoundingClientRect();
             const containerRect = container.getBoundingClientRect();
-            nodePositions[node.id] = {
-                x: rect.left - containerRect.left,
-                y: rect.top - containerRect.top,
-                width: rect.width
+            nodeRects[node.id] = {
+                left: rect.left - containerRect.left,
+                top: rect.top - containerRect.top,
+                right: rect.right - containerRect.left,
+                bottom: rect.bottom - containerRect.top,
+                width: rect.width,
+                height: rect.height
             };
         }
     }
     
-    // 获取输出端口位置
+    // 获取端口位置
     const portPositions = {};
     for (const node of nodes) {
         const nodeEl = container.querySelector(`.flow-node[data-node-id="${node.id}"]`);
         if (nodeEl) {
             const outputPorts = nodeEl.querySelectorAll('.output-port');
-            for (const port of outputPorts) {
-                const portName = port.querySelector('.port-name')?.textContent;
+            outputPorts.forEach((port, idx) => {
+                const portName = node.data.outputs[idx];
                 const portRect = port.getBoundingClientRect();
                 const containerRect = container.getBoundingClientRect();
                 portPositions[`${node.id}|out|${portName}`] = {
                     x: portRect.right - containerRect.left - 4,
                     y: (portRect.top + portRect.bottom) / 2 - containerRect.top
                 };
-            }
+            });
             
             const inputPorts = nodeEl.querySelectorAll('.input-port');
-            for (const port of inputPorts) {
-                const portName = port.querySelector('.port-name')?.textContent;
+            inputPorts.forEach((port, idx) => {
+                const portName = node.data.inputs[idx];
                 const portRect = port.getBoundingClientRect();
                 const containerRect = container.getBoundingClientRect();
                 portPositions[`${node.id}|in|${portName}`] = {
                     x: portRect.left - containerRect.left + 4,
                     y: (portRect.top + portRect.bottom) / 2 - containerRect.top
                 };
-            }
+            });
         }
     }
     
-    // 绘制连线
+    // 创建 SVG
     const svgNS = "http://www.w3.org/2000/svg";
-    const svg = document.createElementNS(svgNS, "svg");
+    let svg = container.querySelector('.connections-svg');
+    if (svg) svg.remove();
+    
+    svg = document.createElementNS(svgNS, "svg");
+    svg.classList.add('connections-svg');
     svg.style.position = "absolute";
     svg.style.top = "0";
     svg.style.left = "0";
@@ -769,15 +677,15 @@ function renderConnections(container) {
             path.setAttribute("stroke", "#89b4fa");
             path.setAttribute("stroke-width", "2");
             path.setAttribute("fill", "none");
-            svg.appendChild(path);
-            
-            // 添加删除按钮功能（双击删除）
             path.style.cursor = "pointer";
             path.style.pointerEvents = "visibleStroke";
+            
             path.addEventListener("dblclick", (e) => {
                 e.stopPropagation();
                 removeConnection(conn.fromNodeId, conn.fromPort, conn.toNodeId, conn.toPort);
             });
+            
+            svg.appendChild(path);
         }
     }
     
@@ -785,181 +693,80 @@ function renderConnections(container) {
 }
 
 function makeDraggable(element, node) {
-    let isDragging = false;
-    let startX, startY;
+    let startX, startY, startLeft, startTop;
     
-    const handle = element.querySelector('.node-header');
+    const header = element.querySelector('.node-header');
     
-    handle.addEventListener('mousedown', (e) => {
-        if (e.target.classList.contains('delete-node-btn') || 
-            e.target.classList.contains('edit-nested-btn') ||
-            e.target.closest('.node-actions')) {
-            return;
-        }
-        isDragging = true;
-        startX = e.clientX - node.position.x;
-        startY = e.clientY - node.position.y;
+    header.addEventListener('mousedown', (e) => {
+        if (e.target.classList.contains('delete-node-btn')) return;
+        
+        startX = e.clientX;
+        startY = e.clientY;
+        startLeft = node.position.x;
+        startTop = node.position.y;
+        
         element.style.zIndex = '1000';
-        e.preventDefault();
-    });
-    
-    window.addEventListener('mousemove', (e) => {
-        if (isDragging) {
-            node.position.x = e.clientX - startX;
-            node.position.y = e.clientY - startY;
+        
+        const onMouseMove = (moveEvent) => {
+            const dx = moveEvent.clientX - startX;
+            const dy = moveEvent.clientY - startY;
+            node.position.x = startLeft + dx;
+            node.position.y = startTop + dy;
             element.style.left = `${node.position.x}px`;
             element.style.top = `${node.position.y}px`;
             
             // 重新绘制连线
-            renderNodes();
-        }
-    });
-    
-    window.addEventListener('mouseup', () => {
-        if (isDragging) {
-            isDragging = false;
-            element.style.zIndex = '1';
+            const container = document.getElementById('react-flow');
+            renderConnections(container);
+        };
+        
+        const onMouseUp = () => {
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+            element.style.zIndex = '';
             updateGeneratedCode();
+        };
+        
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+        e.preventDefault();
+    });
+}
+
+// ========== 输入端口点击接收连线 ==========
+document.addEventListener('click', (e) => {
+    if (!connectionStart) return;
+    
+    const inputPort = e.target.closest('.input-port');
+    if (inputPort) {
+        const nodeDiv = inputPort.closest('.flow-node');
+        if (nodeDiv) {
+            const nodeId = nodeDiv.getAttribute('data-node-id');
+            const node = nodes.find(n => n.id === nodeId);
+            if (node) {
+                // 找到对应的输入端口名
+                const inputIndex = Array.from(inputPort.parentElement.querySelectorAll('.input-port')).indexOf(inputPort);
+                if (inputIndex >= 0 && node.data.inputs[inputIndex]) {
+                    finishConnection(nodeId, node.data.inputs[inputIndex]);
+                }
+            }
         }
-    });
-}
-
-// ========== 嵌套节点编辑器 ==========
-function openNestedEditor(node) {
-    nestedEditingNode = node;
-    const modal = document.getElementById('nested-modal');
-    const nestedCanvas = document.getElementById('nested-canvas');
-    
-    // 显示模态框
-    modal.style.display = 'block';
-    
-    // 初始化嵌套画布（简化版）
-    nestedCanvas.innerHTML = '<div style="color:#6c7086; padding:20px;">嵌套节点编辑器 - 拖拽左侧函数到此区域</div>';
-    
-    // 显示输入输出列表
-    const inputList = document.getElementById('nested-input-list');
-    const outputList = document.getElementById('nested-output-list');
-    
-    inputList.innerHTML = '';
-    outputList.innerHTML = '';
-    
-    (node.data.nestedInputs || []).forEach((inp, idx) => {
-        const item = document.createElement('div');
-        item.className = 'port-item';
-        item.innerHTML = `
-            <span>📥 ${inp.name}</span>
-            <button onclick="removeNestedInput(${idx})">✕</button>
-        `;
-        inputList.appendChild(item);
-    });
-    
-    (node.data.nestedOutputs || []).forEach((out, idx) => {
-        const item = document.createElement('div');
-        item.className = 'port-item';
-        item.innerHTML = `
-            <span>📤 ${out.name}</span>
-            <button onclick="removeNestedOutput(${idx})">✕</button>
-        `;
-        outputList.appendChild(item);
-    });
-}
-
-function closeNestedModal() {
-    document.getElementById('nested-modal').style.display = 'none';
-    nestedEditingNode = null;
-}
-
-function addNestedInput() {
-    if (!nestedEditingNode) return;
-    const name = prompt('输入端口名称:');
-    if (name) {
-        if (!nestedEditingNode.data.nestedInputs) nestedEditingNode.data.nestedInputs = [];
-        nestedEditingNode.data.nestedInputs.push({ name });
-        if (!nestedEditingNode.data.inputs) nestedEditingNode.data.inputs = [];
-        nestedEditingNode.data.inputs.push(name);
-        openNestedEditor(nestedEditingNode);
+    } else {
+        cancelConnection();
     }
-}
-
-function addNestedOutput() {
-    if (!nestedEditingNode) return;
-    const name = prompt('输出端口名称:');
-    if (name) {
-        if (!nestedEditingNode.data.nestedOutputs) nestedEditingNode.data.nestedOutputs = [];
-        nestedEditingNode.data.nestedOutputs.push({ name });
-        if (!nestedEditingNode.data.outputs) nestedEditingNode.data.outputs = [];
-        nestedEditingNode.data.outputs.push(name);
-        openNestedEditor(nestedEditingNode);
-    }
-}
-
-function removeNestedInput(idx) {
-    if (nestedEditingNode) {
-        nestedEditingNode.data.nestedInputs.splice(idx, 1);
-        nestedEditingNode.data.inputs.splice(idx, 1);
-        openNestedEditor(nestedEditingNode);
-    }
-}
-
-function removeNestedOutput(idx) {
-    if (nestedEditingNode) {
-        nestedEditingNode.data.nestedOutputs.splice(idx, 1);
-        nestedEditingNode.data.outputs.splice(idx, 1);
-        openNestedEditor(nestedEditingNode);
-    }
-}
-
-function saveNestedNode() {
-    if (!nestedEditingNode) return;
-    
-    // 这里可以保存子节点和子连接
-    addLog(`💾 保存嵌套节点: ${nestedEditingNode.data.label}`);
-    closeNestedModal();
-    renderNodes();
-    updateGeneratedCode();
-}
-
-// 全局函数供 HTML 调用
-window.removeNestedInput = removeNestedInput;
-window.removeNestedOutput = removeNestedOutput;
-window.addNestedInput = addNestedInput;
-window.addNestedOutput = addNestedOutput;
-
-// ========== 执行顺序显示 ==========
-function displayExecOrder() {
-    const order = getTopologicalOrder();
-    const orderText = order.map((id, idx) => {
-        const node = nodes.find(n => n.id === id);
-        return `${idx + 1}. ${node?.data.label || id.slice(-4)}`;
-    }).join('\n');
-    
-    addLog(`📊 执行顺序:\n${orderText}`);
-}
-
-// ========== 下载和复制 ==========
-async function downloadCode() {
-    const code = codeMirror.getValue();
-    const blob = new Blob([code], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `node_program_${new Date().toISOString().slice(0,19)}.py`;
-    a.click();
-    URL.revokeObjectURL(url);
-    addLog(`💾 代码已下载`);
-}
-
-async function copyCode() {
-    const code = codeMirror.getValue();
-    await navigator.clipboard.writeText(code);
-    addLog(`📋 代码已复制到剪贴板`);
-}
+});
 
 // ========== 日志 ==========
 function addLog(message) {
     const logDiv = document.getElementById('output-log');
     const entry = document.createElement('div');
     entry.className = 'log-entry';
+    entry.style.padding = '4px 8px';
+    entry.style.margin = '2px 0';
+    entry.style.backgroundColor = '#24273a';
+    entry.style.borderRadius = '4px';
+    entry.style.borderLeft = '2px solid #89b4fa';
+    entry.style.fontSize = '11px';
     entry.innerHTML = `<span style="color:#89b4fa;">[${new Date().toLocaleTimeString()}]</span> ${message}`;
     logDiv.appendChild(entry);
     logDiv.scrollTop = logDiv.scrollHeight;
@@ -970,32 +777,30 @@ function addLog(message) {
 }
 
 function clearLogs() {
-    const logDiv = document.getElementById('output-log');
-    logDiv.innerHTML = '';
+    document.getElementById('output-log').innerHTML = '';
 }
 
-// ========== 函数库加载 ==========
+// ========== 函数库 ==========
 async function loadAllFunctions() {
-    // 默认函数库
     functionLibrary = {
         'math': {
             name: '数学运算',
             functions: {
                 'add': {
                     name: '加法',
-                    code: 'def add(a, b):\n    """@name: 加法\n    @description: 返回两个数的和\n    @outputs: sum"""\n    return a + b',
+                    code: 'def add(a, b):\n    """加法：返回 a + b"""\n    return a + b',
                     inputs: ['a', 'b'],
                     outputs: ['sum']
                 },
                 'multiply': {
                     name: '乘法',
-                    code: 'def multiply(a, b):\n    """乘法函数"""\n    return a * b',
+                    code: 'def multiply(a, b):\n    """乘法：返回 a * b"""\n    return a * b',
                     inputs: ['a', 'b'],
                     outputs: ['product']
                 },
                 'square': {
                     name: '平方',
-                    code: 'def square(x):\n    """平方函数"""\n    return x ** 2',
+                    code: 'def square(x):\n    """平方：返回 x^2"""\n    return x ** 2',
                     inputs: ['x'],
                     outputs: ['result']
                 }
@@ -1006,7 +811,7 @@ async function loadAllFunctions() {
             functions: {
                 'to_upper': {
                     name: '转大写',
-                    code: 'def to_upper(text):\n    """转大写"""\n    return text.upper()',
+                    code: 'def to_upper(text):\n    """转换为大写"""\n    return text.upper()',
                     inputs: ['text'],
                     outputs: ['result']
                 },
@@ -1015,23 +820,6 @@ async function loadAllFunctions() {
                     code: 'def greet(name):\n    """生成问候语"""\n    return f"Hello, {name}!"',
                     inputs: ['name'],
                     outputs: ['message']
-                }
-            }
-        },
-        'list': {
-            name: '列表操作',
-            functions: {
-                'sum_list': {
-                    name: '列表求和',
-                    code: 'def sum_list(arr):\n    """列表所有元素求和"""\n    return sum(arr)',
-                    inputs: ['arr'],
-                    outputs: ['total']
-                },
-                'append_item': {
-                    name: '添加元素',
-                    code: 'def append_item(arr, item):\n    """向列表添加元素"""\n    arr.append(item)\n    return arr',
-                    inputs: ['arr', 'item'],
-                    outputs: ['result']
                 }
             }
         }
@@ -1048,28 +836,44 @@ function buildFunctionTree() {
     for (const [catKey, catData] of Object.entries(functionLibrary)) {
         const catDiv = document.createElement('div');
         catDiv.className = 'category';
+        catDiv.style.marginBottom = '16px';
         
         const header = document.createElement('div');
         header.className = 'category-header';
+        header.style.padding = '8px 12px';
+        header.style.backgroundColor = '#313244';
+        header.style.borderRadius = '6px';
+        header.style.cursor = 'pointer';
+        header.style.fontSize = '13px';
+        header.style.fontWeight = 'bold';
+        header.style.color = '#89b4fa';
         header.innerHTML = `📁 ${catData.name} <span style="font-size:10px;">(${Object.keys(catData.functions).length})</span>`;
-        let itemsVisible = true;
+        
+        let visible = true;
         header.onclick = () => {
-            itemsVisible = !itemsVisible;
-            const items = catDiv.querySelector('.category-items');
-            items.style.display = itemsVisible ? 'block' : 'none';
+            visible = !visible;
+            itemsDiv.style.display = visible ? 'block' : 'none';
         };
         
         const itemsDiv = document.createElement('div');
         itemsDiv.className = 'category-items';
+        itemsDiv.style.marginLeft = '8px';
+        itemsDiv.style.marginTop = '8px';
         
         for (const [funcName, funcData] of Object.entries(catData.functions)) {
             const item = document.createElement('div');
             item.className = 'function-item';
-            item.innerHTML = `
-                <strong>${funcData.name}</strong>
-                <small>${(funcData.inputs || []).join(', ')} → ${(funcData.outputs || ['result']).join(', ')}</small>
-            `;
+            item.style.padding = '8px 12px';
+            item.style.margin = '4px 0';
+            item.style.backgroundColor = '#2a2a3c';
+            item.style.borderRadius = '6px';
+            item.style.cursor = 'grab';
+            item.style.borderLeft = '3px solid #89b4fa';
             item.draggable = true;
+            item.innerHTML = `
+                <strong style="font-size:12px;">${funcData.name}</strong>
+                <small style="display:block; font-size:10px; opacity:0.7;">${(funcData.inputs || []).join(', ')} → ${(funcData.outputs || ['result']).join(', ')}</small>
+            `;
             
             item.ondragstart = (e) => {
                 e.dataTransfer.setData('text/plain', JSON.stringify({
@@ -1092,26 +896,58 @@ function buildFunctionTree() {
     }
 }
 
-// ========== 示例节点 ==========
 function addExampleNodes() {
+    // 添加两个示例节点
+    const addFunc = functionLibrary.math.functions.add;
+    const squareFunc = functionLibrary.math.functions.square;
+    
     addNode({
         funcName: 'add',
-        displayName: '加法示例',
-        code: functionLibrary.math.functions.add.code,
-        inputs: ['a', 'b'],
-        outputs: ['sum']
+        displayName: '加法',
+        code: addFunc.code,
+        inputs: addFunc.inputs,
+        outputs: addFunc.outputs
     }, 100, 100);
     
     addNode({
         funcName: 'square',
-        displayName: '平方示例',
-        code: functionLibrary.math.functions.square.code,
-        inputs: ['x'],
-        outputs: ['result']
-    }, 400, 100);
+        displayName: '平方',
+        code: squareFunc.code,
+        inputs: squareFunc.inputs,
+        outputs: squareFunc.outputs
+    }, 400, 150);
+    
+    addLog('📌 已添加示例节点');
 }
 
-// ========== Pyodide 加载 ==========
+// ========== UI 事件绑定 ==========
+function displayExecOrder() {
+    const order = getTopologicalOrder();
+    const orderText = order.map((id, i) => {
+        const node = nodes.find(n => n.id === id);
+        return `${i+1}. ${node?.data.label || '?'}`;
+    }).join(' → ');
+    addLog(`📊 执行顺序: ${orderText}`);
+}
+
+async function downloadCode() {
+    const code = codeMirror.getValue();
+    const blob = new Blob([code], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `node_program_${new Date().toISOString().slice(0,19)}.py`;
+    a.click();
+    URL.revokeObjectURL(url);
+    addLog(`💾 代码已下载`);
+}
+
+async function copyCode() {
+    const code = codeMirror.getValue();
+    await navigator.clipboard.writeText(code);
+    addLog(`📋 代码已复制`);
+}
+
 function loadPyodide() {
     return new Promise((resolve, reject) => {
         if (window.loadPyodide) {
@@ -1132,7 +968,7 @@ function loadPyodide() {
     });
 }
 
-// ========== 绑定 UI 事件 ==========
+// ========== 绑定 UI 按钮 ==========
 document.getElementById('clear-canvas')?.addEventListener('click', () => {
     if (confirm('确定清空所有节点吗？')) {
         nodes = [];
@@ -1149,10 +985,7 @@ document.getElementById('run-all')?.addEventListener('click', async () => {
 });
 
 document.getElementById('toggle-exec-order')?.addEventListener('click', () => {
-    showExecOrder = !showExecOrder;
-    if (showExecOrder) {
-        displayExecOrder();
-    }
+    displayExecOrder();
 });
 
 document.getElementById('copy-code')?.addEventListener('click', copyCode);
@@ -1162,14 +995,3 @@ document.getElementById('refresh-functions')?.addEventListener('click', async ()
     await loadAllFunctions();
     addLog('🔄 函数库已刷新');
 });
-
-// 模态框事件
-document.querySelector('.modal-close')?.addEventListener('click', closeNestedModal);
-document.getElementById('save-nested')?.addEventListener('click', saveNestedNode);
-window.addEventListener('click', (e) => {
-    const modal = document.getElementById('nested-modal');
-    if (e.target === modal) closeNestedModal();
-});
-
-// 导出全局变量供调试
-window.debug = { nodes, connections, getTopologicalOrder, generatePythonCode };
