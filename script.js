@@ -5,8 +5,7 @@ let connections = [];
 let functionLibrary = {};
 let codeMirror = null;
 let showExecOrderFlag = false;
-let connectingFrom = null;  // 连线状态
-let reactFlowInstance = null;
+let connectingFrom = null;
 let nodeIdCounter = 1;
 
 // ========== 初始化 ==========
@@ -23,14 +22,14 @@ window.addEventListener('DOMContentLoaded', async () => {
         lineWrapping: true
     });
     
+    // 先加载函数库（同步方式，确保显示）
+    initFunctionLibrary();
+    buildFunctionTree();
+    
     // 加载 Pyodide
+    updateStatus('加载 Python 运行时...');
     pyodide = await loadPyodide();
     await pyodide.loadPackage(['numpy']);
-    
-    updateStatus('加载函数库...');
-    
-    // 加载函数库
-    await loadAllFunctions();
     
     updateStatus('就绪');
     
@@ -42,6 +41,8 @@ window.addEventListener('DOMContentLoaded', async () => {
     
     // 更新代码
     updateGeneratedCode();
+    
+    addLog('✨ 编辑器已就绪，从左侧拖拽函数到画布创建节点');
 });
 
 function updateStatus(msg) {
@@ -49,10 +50,164 @@ function updateStatus(msg) {
     if (statusEl) statusEl.textContent = msg;
 }
 
+// ========== 函数库（同步初始化，确保显示）==========
+function initFunctionLibrary() {
+    functionLibrary = {
+        'math': {
+            name: '数学运算',
+            functions: {
+                'add': {
+                    name: '加法',
+                    code: 'def add(a, b):\n    """加法：返回 a + b"""\n    return a + b',
+                    inputs: ['a', 'b'],
+                    outputs: ['sum']
+                },
+                'multiply': {
+                    name: '乘法',
+                    code: 'def multiply(a, b):\n    """乘法：返回 a * b"""\n    return a * b',
+                    inputs: ['a', 'b'],
+                    outputs: ['product']
+                },
+                'square': {
+                    name: '平方',
+                    code: 'def square(x):\n    """平方：返回 x^2"""\n    return x ** 2',
+                    inputs: ['x'],
+                    outputs: ['result']
+                },
+                'subtract': {
+                    name: '减法',
+                    code: 'def subtract(a, b):\n    """减法：返回 a - b"""\n    return a - b',
+                    inputs: ['a', 'b'],
+                    outputs: ['difference']
+                }
+            }
+        },
+        'text': {
+            name: '文本处理',
+            functions: {
+                'to_upper': {
+                    name: '转大写',
+                    code: 'def to_upper(text):\n    """转换为大写"""\n    return text.upper()',
+                    inputs: ['text'],
+                    outputs: ['result']
+                },
+                'greet': {
+                    name: '问候',
+                    code: 'def greet(name):\n    """生成问候语"""\n    return f"Hello, {name}!"',
+                    inputs: ['name'],
+                    outputs: ['message']
+                },
+                'reverse': {
+                    name: '反转字符串',
+                    code: 'def reverse(text):\n    """反转字符串"""\n    return text[::-1]',
+                    inputs: ['text'],
+                    outputs: ['result']
+                }
+            }
+        },
+        'list': {
+            name: '列表操作',
+            functions: {
+                'sum_list': {
+                    name: '列表求和',
+                    code: 'def sum_list(arr):\n    """列表所有元素求和"""\n    return sum(arr)',
+                    inputs: ['arr'],
+                    outputs: ['total']
+                },
+                'double_list': {
+                    name: '列表翻倍',
+                    code: 'def double_list(arr):\n    """列表每个元素翻倍"""\n    return [x * 2 for x in arr]',
+                    inputs: ['arr'],
+                    outputs: ['result']
+                }
+            }
+        }
+    };
+}
+
+function buildFunctionTree() {
+    const container = document.getElementById('function-tree');
+    if (!container) {
+        console.error('function-tree 元素未找到');
+        return;
+    }
+    
+    container.innerHTML = '';
+    console.log('构建函数库，分类数:', Object.keys(functionLibrary).length);
+    
+    for (const [catKey, catData] of Object.entries(functionLibrary)) {
+        const catDiv = document.createElement('div');
+        catDiv.className = 'category';
+        catDiv.style.marginBottom = '16px';
+        
+        const header = document.createElement('div');
+        header.className = 'category-header';
+        header.style.padding = '8px 12px';
+        header.style.backgroundColor = '#313244';
+        header.style.borderRadius = '6px';
+        header.style.cursor = 'pointer';
+        header.style.fontSize = '13px';
+        header.style.fontWeight = 'bold';
+        header.style.color = '#89b4fa';
+        header.innerHTML = `📁 ${catData.name} <span style="font-size:10px;">(${Object.keys(catData.functions).length})</span>`;
+        
+        let visible = true;
+        header.onclick = () => {
+            visible = !visible;
+            itemsDiv.style.display = visible ? 'block' : 'none';
+        };
+        
+        const itemsDiv = document.createElement('div');
+        itemsDiv.className = 'category-items';
+        itemsDiv.style.marginLeft = '8px';
+        itemsDiv.style.marginTop = '8px';
+        itemsDiv.style.display = 'block';
+        
+        for (const [funcName, funcData] of Object.entries(catData.functions)) {
+            const item = document.createElement('div');
+            item.className = 'function-item';
+            item.style.padding = '8px 12px';
+            item.style.margin = '4px 0';
+            item.style.backgroundColor = '#2a2a3c';
+            item.style.borderRadius = '6px';
+            item.style.cursor = 'grab';
+            item.style.borderLeft = '3px solid #89b4fa';
+            item.style.transition = 'all 0.2s';
+            item.draggable = true;
+            item.innerHTML = `
+                <strong style="font-size:12px; display:block;">${escapeHtml(funcData.name)}</strong>
+                <small style="font-size:10px; opacity:0.7;">${funcData.inputs.join(', ')} → ${funcData.outputs.join(', ')}</small>
+            `;
+            
+            item.ondragstart = (e) => {
+                e.dataTransfer.setData('text/plain', JSON.stringify({
+                    funcName: funcName,
+                    displayName: funcData.name,
+                    code: funcData.code,
+                    inputs: funcData.inputs,
+                    outputs: funcData.outputs
+                }));
+                e.dataTransfer.effectAllowed = 'copy';
+            };
+            
+            itemsDiv.appendChild(item);
+        }
+        
+        catDiv.appendChild(header);
+        catDiv.appendChild(itemsDiv);
+        container.appendChild(catDiv);
+    }
+    
+    addLog(`📦 函数库加载完成，共 ${Object.keys(functionLibrary).length} 个分类`);
+}
+
 // ========== 画布初始化 ==========
 function initCanvas() {
     const container = document.getElementById('react-flow');
-    if (!container) return;
+    if (!container) {
+        console.error('react-flow 元素未找到');
+        return;
+    }
     
     // 清空容器
     container.innerHTML = '';
@@ -396,7 +551,6 @@ document.addEventListener('click', (e) => {
             const nodeId = nodeDiv.getAttribute('data-node-id');
             const node = nodes.find(n => n.id === nodeId);
             if (node) {
-                // 找到对应的输入端口名
                 const inputsDiv = inputPort.parentElement;
                 const inputIndex = Array.from(inputsDiv.querySelectorAll('.input-port')).indexOf(inputPort);
                 if (inputIndex >= 0 && node.data.inputs[inputIndex]) {
@@ -434,8 +588,6 @@ function makeDraggable(element, node) {
         node.position.y = startTop + dy;
         element.style.left = `${node.position.x}px`;
         element.style.top = `${node.position.y}px`;
-        
-        // 实时更新连线
         renderConnections();
     });
     
@@ -454,14 +606,11 @@ function renderConnections() {
     const container = document.getElementById('react-flow');
     if (!container) return;
     
-    // 移除旧的 SVG
     let svg = container.querySelector('.connections-svg');
     if (svg) svg.remove();
     
-    // 获取所有端口位置
     const portPositions = getPortPositions();
     
-    // 创建新 SVG
     const svgNS = "http://www.w3.org/2000/svg";
     svg = document.createElementNS(svgNS, "svg");
     svg.classList.add('connections-svg');
@@ -473,7 +622,6 @@ function renderConnections() {
     svg.style.pointerEvents = "none";
     svg.style.zIndex = "50";
     
-    // 绘制每条连线
     for (let i = 0; i < connections.length; i++) {
         const conn = connections[i];
         const startKey = `${conn.fromNodeId}|out|${conn.fromPort}`;
@@ -493,7 +641,6 @@ function renderConnections() {
             path.style.pointerEvents = "visibleStroke";
             path.style.cursor = "pointer";
             
-            // 双击删除
             path.addEventListener("dblclick", (e) => {
                 e.stopPropagation();
                 removeConnection(i);
@@ -519,7 +666,6 @@ function getPortPositions() {
         
         const nodeRect = nodeEl.getBoundingClientRect();
         
-        // 输出端口位置
         const outputPorts = nodeEl.querySelectorAll('.output-port');
         outputPorts.forEach(port => {
             const portName = port.getAttribute('data-port-name');
@@ -530,7 +676,6 @@ function getPortPositions() {
             };
         });
         
-        // 输入端口位置
         const inputPorts = nodeEl.querySelectorAll('.input-port');
         inputPorts.forEach((port, idx) => {
             const portName = node.data.inputs[idx];
@@ -547,6 +692,11 @@ function getPortPositions() {
 
 // ========== 执行节点 ==========
 async function executeSingleNode(node) {
+    if (!pyodide) {
+        addLog('❌ Python 运行时未就绪');
+        return;
+    }
+    
     node.data.isExecuting = true;
     renderNodes();
     
@@ -596,6 +746,11 @@ except Exception as e:
 }
 
 async function executeAllNodes() {
+    if (!pyodide) {
+        addLog('❌ Python 运行时未就绪');
+        return;
+    }
+    
     const order = getTopologicalOrder();
     const results = {};
     
@@ -703,7 +858,6 @@ function generatePythonCode() {
     lines.push('# 由 Python 节点编辑器自动生成');
     lines.push('');
     
-    // 添加函数定义
     const addedFuncs = new Set();
     for (const node of nodes) {
         if (!addedFuncs.has(node.data.funcName)) {
@@ -756,140 +910,10 @@ function updateGeneratedCode() {
     }
 }
 
-// ========== 函数库 ==========
-async function loadAllFunctions() {
-    functionLibrary = {
-        'math': {
-            name: '数学运算',
-            functions: {
-                'add': {
-                    name: '加法',
-                    code: 'def add(a, b):\n    """加法：返回 a + b"""\n    return a + b',
-                    inputs: ['a', 'b'],
-                    outputs: ['sum']
-                },
-                'multiply': {
-                    name: '乘法',
-                    code: 'def multiply(a, b):\n    """乘法：返回 a * b"""\n    return a * b',
-                    inputs: ['a', 'b'],
-                    outputs: ['product']
-                },
-                'square': {
-                    name: '平方',
-                    code: 'def square(x):\n    """平方：返回 x^2"""\n    return x ** 2',
-                    inputs: ['x'],
-                    outputs: ['result']
-                },
-                'subtract': {
-                    name: '减法',
-                    code: 'def subtract(a, b):\n    """减法：返回 a - b"""\n    return a - b',
-                    inputs: ['a', 'b'],
-                    outputs: ['difference']
-                }
-            }
-        },
-        'text': {
-            name: '文本处理',
-            functions: {
-                'to_upper': {
-                    name: '转大写',
-                    code: 'def to_upper(text):\n    """转换为大写"""\n    return text.upper()',
-                    inputs: ['text'],
-                    outputs: ['result']
-                },
-                'greet': {
-                    name: '问候',
-                    code: 'def greet(name):\n    """生成问候语"""\n    return f"Hello, {name}!"',
-                    inputs: ['name'],
-                    outputs: ['message']
-                }
-            }
-        },
-        'list': {
-            name: '列表操作',
-            functions: {
-                'sum_list': {
-                    name: '列表求和',
-                    code: 'def sum_list(arr):\n    """列表所有元素求和"""\n    return sum(arr)',
-                    inputs: ['arr'],
-                    outputs: ['total']
-                }
-            }
-        }
-    };
-    
-    buildFunctionTree();
-    addLog('📦 函数库加载完成');
-}
-
-function buildFunctionTree() {
-    const container = document.getElementById('function-tree');
-    if (!container) return;
-    container.innerHTML = '';
-    
-    for (const [catKey, catData] of Object.entries(functionLibrary)) {
-        const catDiv = document.createElement('div');
-        catDiv.className = 'category';
-        catDiv.style.marginBottom = '16px';
-        
-        const header = document.createElement('div');
-        header.className = 'category-header';
-        header.style.padding = '8px 12px';
-        header.style.backgroundColor = '#313244';
-        header.style.borderRadius = '6px';
-        header.style.cursor = 'pointer';
-        header.style.fontSize = '13px';
-        header.style.fontWeight = 'bold';
-        header.style.color = '#89b4fa';
-        header.innerHTML = `📁 ${catData.name} <span style="font-size:10px;">(${Object.keys(catData.functions).length})</span>`;
-        
-        let visible = true;
-        header.onclick = () => {
-            visible = !visible;
-            itemsDiv.style.display = visible ? 'block' : 'none';
-        };
-        
-        const itemsDiv = document.createElement('div');
-        itemsDiv.className = 'category-items';
-        itemsDiv.style.marginLeft = '8px';
-        itemsDiv.style.marginTop = '8px';
-        
-        for (const [funcName, funcData] of Object.entries(catData.functions)) {
-            const item = document.createElement('div');
-            item.className = 'function-item';
-            item.style.padding = '8px 12px';
-            item.style.margin = '4px 0';
-            item.style.backgroundColor = '#2a2a3c';
-            item.style.borderRadius = '6px';
-            item.style.cursor = 'grab';
-            item.style.borderLeft = '3px solid #89b4fa';
-            item.draggable = true;
-            item.innerHTML = `
-                <strong style="font-size:12px; display:block;">${escapeHtml(funcData.name)}</strong>
-                <small style="font-size:10px; opacity:0.7;">${funcData.inputs.join(', ')} → ${funcData.outputs.join(', ')}</small>
-            `;
-            
-            item.ondragstart = (e) => {
-                e.dataTransfer.setData('text/plain', JSON.stringify({
-                    funcName: funcName,
-                    displayName: funcData.name,
-                    code: funcData.code,
-                    inputs: funcData.inputs,
-                    outputs: funcData.outputs
-                }));
-                e.dataTransfer.effectAllowed = 'copy';
-            };
-            
-            itemsDiv.appendChild(item);
-        }
-        
-        catDiv.appendChild(header);
-        catDiv.appendChild(itemsDiv);
-        container.appendChild(catDiv);
-    }
-}
-
+// ========== 示例节点 ==========
 function addExampleNodes() {
+    if (!functionLibrary.math) return;
+    
     const addFunc = functionLibrary.math.functions.add;
     const squareFunc = functionLibrary.math.functions.square;
     
@@ -915,7 +939,7 @@ function addExampleNodes() {
 // ========== 工具函数 ==========
 function escapeHtml(str) {
     if (!str) return '';
-    return str.replace(/[&<>]/g, function(m) {
+    return String(str).replace(/[&<>]/g, function(m) {
         if (m === '&') return '&amp;';
         if (m === '<') return '&lt;';
         if (m === '>') return '&gt;';
