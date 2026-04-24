@@ -13,7 +13,6 @@ window.addEventListener('DOMContentLoaded', async () => {
     console.log('初始化编辑器...');
     updateStatus('加载 Python 运行时...');
 
-    // 初始化 CodeMirror
     if (document.getElementById('code-editor')) {
         codeMirror = CodeMirror.fromTextArea(document.getElementById('code-editor'), {
             mode: 'python',
@@ -24,25 +23,17 @@ window.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    // 初始化函数库
     initFunctionLibrary();
     buildFunctionTree();
 
-    // 加载 Pyodide（修复递归问题）
     await initPyodide();
-
     updateStatus('就绪');
 
-    // 初始化画布
     initCanvas();
-
-    // 添加示例节点
     addExampleNodes();
-
-    // 更新代码
     updateGeneratedCode();
-
     addLog('✨ 从左侧拖拽函数到画布即可创建节点');
+    addLog('💡 点击节点的红色输出端口，再点击绿色输入端口即可建立连线');
 });
 
 function updateStatus(msg) {
@@ -50,11 +41,9 @@ function updateStatus(msg) {
     if (el) el.textContent = msg;
 }
 
-// 修复 Pyodide 加载函数 - 避免递归
 async function initPyodide() {
     if (pyodide) return pyodide;
     if (pyodideLoading) {
-        // 等待加载完成
         while (pyodideLoading) {
             await new Promise(r => setTimeout(r, 100));
         }
@@ -63,7 +52,6 @@ async function initPyodide() {
     
     pyodideLoading = true;
     try {
-        // 等待 loadPyodide 全局函数可用
         while (typeof window.loadPyodide === 'undefined') {
             await new Promise(r => setTimeout(r, 100));
         }
@@ -85,47 +73,17 @@ function initFunctionLibrary() {
         'math': {
             name: '数学运算',
             functions: {
-                'add': {
-                    name: '加法',
-                    code: 'def add(a, b):\n    return a + b',
-                    inputs: ['a', 'b'],
-                    outputs: ['result']
-                },
-                'multiply': {
-                    name: '乘法',
-                    code: 'def multiply(a, b):\n    return a * b',
-                    inputs: ['a', 'b'],
-                    outputs: ['result']
-                },
-                'square': {
-                    name: '平方',
-                    code: 'def square(x):\n    return x ** 2',
-                    inputs: ['x'],
-                    outputs: ['result']
-                },
-                'subtract': {
-                    name: '减法',
-                    code: 'def subtract(a, b):\n    return a - b',
-                    inputs: ['a', 'b'],
-                    outputs: ['result']
-                }
+                'add': { name: '加法', code: 'def add(a, b):\n    return a + b', inputs: ['a', 'b'], outputs: ['result'] },
+                'multiply': { name: '乘法', code: 'def multiply(a, b):\n    return a * b', inputs: ['a', 'b'], outputs: ['result'] },
+                'square': { name: '平方', code: 'def square(x):\n    return x ** 2', inputs: ['x'], outputs: ['result'] },
+                'subtract': { name: '减法', code: 'def subtract(a, b):\n    return a - b', inputs: ['a', 'b'], outputs: ['result'] }
             }
         },
         'text': {
             name: '文本处理',
             functions: {
-                'to_upper': {
-                    name: '转大写',
-                    code: 'def to_upper(text):\n    return text.upper()',
-                    inputs: ['text'],
-                    outputs: ['result']
-                },
-                'greet': {
-                    name: '问候',
-                    code: 'def greet(name):\n    return f"Hello, {name}!"',
-                    inputs: ['name'],
-                    outputs: ['result']
-                }
+                'to_upper': { name: '转大写', code: 'def to_upper(text):\n    return text.upper()', inputs: ['text'], outputs: ['result'] },
+                'greet': { name: '问候', code: 'def greet(name):\n    return f"Hello, {name}!"', inputs: ['name'], outputs: ['result'] }
             }
         }
     };
@@ -134,7 +92,6 @@ function initFunctionLibrary() {
 function buildFunctionTree() {
     const container = document.getElementById('function-tree');
     if (!container) return;
-
     container.innerHTML = '';
 
     for (const [catKey, catData] of Object.entries(functionLibrary)) {
@@ -158,24 +115,19 @@ function buildFunctionTree() {
         for (const [funcName, funcData] of Object.entries(catData.functions)) {
             const item = document.createElement('div');
             item.className = 'function-item';
-            item.innerHTML = `
-                <strong>${funcData.name}</strong>
-                <small>${funcData.inputs.join(', ')} → ${funcData.outputs.join(', ')}</small>
-            `;
+            item.innerHTML = `<strong>${funcData.name}</strong><small>${funcData.inputs.join(', ')} → ${funcData.outputs.join(', ')}</small>`;
             item.draggable = true;
 
             item.ondragstart = (e) => {
-                const dragData = JSON.stringify({
+                e.dataTransfer.setData('text/plain', JSON.stringify({
                     funcName: funcName,
                     displayName: funcData.name,
                     code: funcData.code,
                     inputs: funcData.inputs,
                     outputs: funcData.outputs
-                });
-                e.dataTransfer.setData('text/plain', dragData);
+                }));
                 e.dataTransfer.effectAllowed = 'copy';
             };
-
             itemsDiv.appendChild(item);
         }
 
@@ -194,7 +146,6 @@ function initCanvas() {
     container.style.minHeight = '600px';
     container.style.overflow = 'auto';
 
-    // 拖拽放置
     container.addEventListener('dragover', (e) => {
         e.preventDefault();
         e.dataTransfer.dropEffect = 'copy';
@@ -202,14 +153,9 @@ function initCanvas() {
 
     container.addEventListener('drop', (e) => {
         e.preventDefault();
-        
         const rect = container.getBoundingClientRect();
-        const scrollLeft = container.scrollLeft;
-        const scrollTop = container.scrollTop;
-        
-        const x = e.clientX - rect.left + scrollLeft - 110;
-        const y = e.clientY - rect.top + scrollTop - 60;
-
+        const x = e.clientX - rect.left + container.scrollLeft - 110;
+        const y = e.clientY - rect.top + container.scrollTop - 60;
         try {
             const funcData = JSON.parse(e.dataTransfer.getData('text/plain'));
             createNode(funcData, x, y);
@@ -225,7 +171,6 @@ function initCanvas() {
     });
 }
 
-// 创建节点
 function createNode(funcData, x, y) {
     const nodeId = `node_${nodeIdCounter++}`;
     const node = {
@@ -242,7 +187,6 @@ function createNode(funcData, x, y) {
             outputValue: null
         }
     };
-
     nodes.push(node);
     renderAll();
     updateGeneratedCode();
@@ -257,10 +201,11 @@ function deleteNode(nodeId) {
     addLog(`🗑️ 删除节点`);
 }
 
+// ========== 连线操作（修复版）==========
 function startConnection(nodeId, portName) {
     connectingFrom = { nodeId, portName };
     document.body.style.cursor = 'crosshair';
-    addLog(`🔌 开始连线: ${portName}`);
+    addLog(`🔌 开始连线: 从 "${portName}" 端口`);
 }
 
 function finishConnection(toNodeId, toPort) {
@@ -292,9 +237,9 @@ function finishConnection(toNodeId, toPort) {
         toPort: toPort
     });
 
-    addLog(`🔗 连接: ${connectingFrom.portName} → ${toPort}`);
+    addLog(`🔗 连接成功: ${connectingFrom.portName} → ${toPort}`);
     cancelConnection();
-    renderAll();
+    renderAll();  // 重新渲染以显示连线
     updateGeneratedCode();
 }
 
@@ -303,11 +248,12 @@ function cancelConnection() {
     document.body.style.cursor = '';
 }
 
-function removeConnection(idx) {
-    connections.splice(idx, 1);
+function removeConnection(index) {
+    const conn = connections[index];
+    connections.splice(index, 1);
     renderAll();
     updateGeneratedCode();
-    addLog(`🔗 删除连接`);
+    addLog(`🔗 删除连接: ${conn.fromPort} → ${conn.toPort}`);
 }
 
 // ========== 渲染 ==========
@@ -444,9 +390,7 @@ function updateNodeElement(div, node) {
     footer.style.marginTop = '8px';
     footer.style.paddingTop = '8px';
     footer.style.borderTop = '1px solid #313244';
-    footer.innerHTML = `
-        <button class="run-btn" style="width:100%; background:#313244; border:none; color:#cdd6f4; padding:4px; border-radius:4px; cursor:pointer; font-size:10px;">▶ 执行</button>
-    `;
+    footer.innerHTML = `<button class="run-btn" style="width:100%; background:#313244; border:none; color:#cdd6f4; padding:4px; border-radius:4px; cursor:pointer; font-size:10px;">▶ 执行</button>`;
     content.appendChild(footer);
 
     div.innerHTML = '';
@@ -463,7 +407,7 @@ function updateNodeElement(div, node) {
     const runBtn = div.querySelector('.run-btn');
     runBtn.onclick = async (e) => {
         e.stopPropagation();
-        await initPyodide(); // 确保 pyodide 已加载
+        await initPyodide();
         await executeNode(node);
         updateNodeElement(div, node);
         updateGeneratedCode();
@@ -484,9 +428,9 @@ function updateNodeElement(div, node) {
     ports.forEach(port => {
         port.onclick = (e) => {
             e.stopPropagation();
-            const nodeId = port.getAttribute('data-node');
-            const portName = port.getAttribute('data-port');
-            startConnection(nodeId, portName);
+            const nId = port.getAttribute('data-node');
+            const pName = port.getAttribute('data-port');
+            startConnection(nId, pName);
         };
     });
 
@@ -496,19 +440,7 @@ function updateNodeElement(div, node) {
 function makeDraggable(element, node) {
     let dragging = false;
     let startX, startY, startLeft, startTop;
-
     const header = element.querySelector('.node-header');
-
-    header.addEventListener('mousedown', (e) => {
-        if (e.target.classList.contains('del-btn')) return;
-        dragging = true;
-        startX = e.clientX;
-        startY = e.clientY;
-        startLeft = node.x;
-        startTop = node.y;
-        element.style.zIndex = '1000';
-        e.preventDefault();
-    });
 
     const onMouseMove = (e) => {
         if (!dragging) return;
@@ -532,10 +464,21 @@ function makeDraggable(element, node) {
         window.removeEventListener('mouseup', onMouseUp);
     };
 
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
+    header.addEventListener('mousedown', (e) => {
+        if (e.target.classList.contains('del-btn')) return;
+        dragging = true;
+        startX = e.clientX;
+        startY = e.clientY;
+        startLeft = node.x;
+        startTop = node.y;
+        element.style.zIndex = '1000';
+        e.preventDefault();
+        window.addEventListener('mousemove', onMouseMove);
+        window.addEventListener('mouseup', onMouseUp);
+    });
 }
 
+// 渲染连线
 function renderConnections() {
     const container = document.getElementById('react-flow');
     if (!container) return;
@@ -620,9 +563,11 @@ function getPortPositions() {
     return positions;
 }
 
+// 全局点击事件：监听输入端口完成连线
 document.addEventListener('click', (e) => {
     if (!connectingFrom) return;
 
+    // 查找被点击的输入端口
     const inputRow = e.target.closest('.input-val')?.parentElement;
     if (!inputRow) return;
 
@@ -684,22 +629,18 @@ async function executeAll() {
     if (!pyodide) return;
 
     addLog(`🚀 执行 ${nodes.length} 个节点`);
-
     for (const node of nodes) {
         await executeNode(node);
     }
-
     renderAll();
-    addLog(`✨ 完成`);
+    addLog(`✨ 执行完成`);
 }
 
 // ========== 代码生成 ==========
 function generatePythonCode() {
-    const lines = [];
-    lines.push('# 由 Python 节点编辑器生成');
-    lines.push('');
-
+    const lines = ['# 由 Python 节点编辑器生成', ''];
     const added = new Set();
+
     for (const node of nodes) {
         if (!added.has(node.data.funcName)) {
             added.add(node.data.funcName);
@@ -730,14 +671,11 @@ function generatePythonCode() {
         lines.push(`print(f"${node.data.label}: {${varName}}")`);
         lines.push('');
     }
-
     return lines.join('\n');
 }
 
 function updateGeneratedCode() {
-    if (codeMirror) {
-        codeMirror.setValue(generatePythonCode());
-    }
+    if (codeMirror) codeMirror.setValue(generatePythonCode());
 }
 
 function addExampleNodes() {
@@ -758,17 +696,12 @@ function addExampleNodes() {
         code: squareFunc.code,
         inputs: squareFunc.inputs,
         outputs: squareFunc.outputs
-    }, 380, 130);
+    }, 400, 150);
 }
 
 function escapeHtml(str) {
     if (!str) return '';
-    return String(str).replace(/[&<>]/g, function(m) {
-        if (m === '&') return '&amp;';
-        if (m === '<') return '&lt;';
-        if (m === '>') return '&gt;';
-        return m;
-    });
+    return String(str).replace(/[&<>]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
 }
 
 function addLog(msg) {
@@ -779,10 +712,6 @@ function addLog(msg) {
     entry.innerHTML = `[${new Date().toLocaleTimeString()}] ${escapeHtml(msg)}`;
     logDiv.appendChild(entry);
     logDiv.scrollTop = logDiv.scrollHeight;
-
-    while (logDiv.children.length > 200) {
-        logDiv.removeChild(logDiv.firstChild);
-    }
 }
 
 function clearLogs() {
